@@ -252,24 +252,51 @@ export async function readDateFromBadgeBuffer(
  */
 export async function readCurrentDate(
   page: Page,
-  _canvas: ElementHandle<Element>,
+  canvas: ElementHandle<Element>,
   debugDir?: string
 ): Promise<DateTimeReading | null> {
   const { SELECTORS } = await import("./selectors.js");
-
-  const el = await page.$(SELECTORS.dateBadgeCanvas);
-  if (!el) {
-    logger.warn("Date-badge canvas not found — update SELECTORS.dateBadgeCanvas in selectors.ts");
-    return null;
-  }
-
-  const canvasBuf = (await el.screenshot()) as Buffer;
-
-  // Always save to tmp/ so you can inspect what was captured
   const fs = await import("fs/promises");
   await fs.mkdir(TMP_DIR, { recursive: true });
-  await fs.writeFile(`${TMP_DIR}/canvas-latest.png`, canvasBuf);
-  logger.debug({ path: `${TMP_DIR}/canvas-latest.png` }, "Canvas saved to tmp/");
 
-  return extractDateFromCanvasBuffer(canvasBuf, debugDir);
+  const candidates: Array<{ label: string; element: ElementHandle<Element> }> = [];
+
+  const dateBadgeCanvas = await page.$(SELECTORS.dateBadgeCanvas);
+  if (dateBadgeCanvas) {
+    candidates.push({ label: "dateBadgeCanvas", element: dateBadgeCanvas });
+  } else {
+    logger.warn("Date-badge canvas not found — falling back to detected chart canvas");
+  }
+
+  candidates.push({ label: "detectedChartCanvas", element: canvas });
+
+  for (const candidate of candidates) {
+    try {
+      const canvasBuf = (await candidate.element.screenshot()) as Buffer;
+
+      // Always save to tmp/ so you can inspect what was captured
+      await fs.writeFile(`${TMP_DIR}/canvas-latest.png`, canvasBuf);
+      logger.debug(
+        { path: `${TMP_DIR}/canvas-latest.png`, source: candidate.label },
+        "Canvas saved to tmp/"
+      );
+
+      const reading = await extractDateFromCanvasBuffer(canvasBuf, debugDir);
+      if (reading) {
+        return reading;
+      }
+
+      logger.warn({ source: candidate.label }, "OCR could not read date from captured canvas");
+    } catch (error) {
+      logger.warn(
+        {
+          source: candidate.label,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to capture canvas for OCR"
+      );
+    }
+  }
+
+  return null;
 }

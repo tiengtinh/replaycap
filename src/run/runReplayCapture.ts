@@ -14,6 +14,10 @@ import { saveScreenshot } from "../capture/saveScreenshot.js";
 import { writeRunSummary } from "./writeRunSummary.js";
 import { formatFileName } from "../utils/formatFileName.js";
 import { logStep, logError, logWarn } from "../utils/logger.js";
+import { sleep } from "../utils/sleep.js";
+
+const OCR_MAX_RETRIES = 3;
+const OCR_RETRY_DELAY_MS = 750;
 
 async function promptLine(message: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -27,6 +31,41 @@ async function promptLine(message: string): Promise<string> {
 
 async function promptEnter(message: string): Promise<void> {
   await promptLine(message);
+}
+
+async function readCurrentDateWithRetries(
+  page: Page,
+  canvas: ElementHandle<Element>,
+  opts: {
+    debugDir?: string;
+    barIndex?: number;
+    phase: "targetDate" | "barDate";
+  }
+) {
+  let reading: Awaited<ReturnType<typeof readCurrentDate>> | null = null;
+
+  for (let attempt = 1; attempt <= OCR_MAX_RETRIES; attempt++) {
+    reading = await readCurrentDate(page, canvas, opts.debugDir);
+    if (reading) {
+      if (attempt > 1) {
+        logStep(
+          { barIndex: opts.barIndex, attempt, phase: opts.phase, currentDate: reading.date },
+          "OCR succeeded after retry"
+        );
+      }
+      return reading;
+    }
+
+    if (attempt < OCR_MAX_RETRIES) {
+      logWarn(
+        { barIndex: opts.barIndex, attempt, phase: opts.phase },
+        "OCR returned no date — retrying"
+      );
+      await sleep(OCR_RETRY_DELAY_MS);
+    }
+  }
+
+  return null;
 }
 
 export async function runReplayCapture(
@@ -86,7 +125,9 @@ export async function runReplayCapture(
 
     if (!targetDate) {
       console.log("\n  Reading date from chart via OCR...");
-      const reading = await readCurrentDate(page, canvas);
+      const reading = await readCurrentDateWithRetries(page, canvas, {
+        phase: "targetDate",
+      });
       if (!reading) {
         throw new Error(
           "OCR could not read the date from the chart.\n" +
@@ -128,7 +169,10 @@ export async function runReplayCapture(
 
       // Also run OCR with debug images saved
       console.log("  Running OCR on date badge...");
-      const reading = await readCurrentDate(page, canvas, debugDir);
+      const reading = await readCurrentDateWithRetries(page, canvas, {
+        debugDir,
+        phase: "barDate",
+      });
       if (reading) {
         console.log(`  OCR result  : date=${reading.date}  time=${reading.time ?? "(none)"}`);
       } else {
@@ -182,7 +226,10 @@ export async function runReplayCapture(
 
       // READING_CURRENT_DATE via OCR
       transition(State.READING_CURRENT_DATE);
-      const reading = await readCurrentDate(page, canvas);
+      const reading = await readCurrentDateWithRetries(page, canvas, {
+        barIndex: runState.barIndex,
+        phase: "barDate",
+      });
       const currentDate = reading?.date ?? null;
 
       logStep(
