@@ -17,6 +17,7 @@ export type AppConfig = {
     targetDate?: string;
     maxBars: number;
     waitForUserReady: boolean;
+    stopMode: "manual" | "date";
   };
   settle: {
     pollMs: number;
@@ -53,6 +54,7 @@ export type RunSummary = {
   targetDate: string;
   symbol: string;
   layoutMode: string;
+  stopMode: "manual" | "date";
   barsCaptured: number;
   startTime: string;
   endTime: string;

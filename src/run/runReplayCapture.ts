@@ -33,6 +33,30 @@ async function promptEnter(message: string): Promise<void> {
   await promptLine(message);
 }
 
+function createManualStopController(enabled: boolean) {
+  let stopRequested = false;
+  let rl: readline.Interface | null = null;
+
+  const handleLine = () => {
+    stopRequested = true;
+  };
+
+  if (enabled) {
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.on("line", handleLine);
+  }
+
+  return {
+    isStopRequested: () => stopRequested,
+    close: () => {
+      if (!rl) return;
+      rl.off("line", handleLine);
+      rl.close();
+      rl = null;
+    },
+  };
+}
+
 async function readCurrentDateWithRetries(
   page: Page,
   canvas: ElementHandle<Element>,
@@ -75,6 +99,9 @@ export async function runReplayCapture(
 ): Promise<RunSummary> {
   const { dryRun = false } = opts;
   let currentState: State = State.IDLE;
+  const manualStopController = createManualStopController(
+    !dryRun && config.run.stopMode === "manual"
+  );
 
   const runState: RunState = {
     targetDate: config.run.targetDate ?? "",
@@ -147,6 +174,11 @@ export async function runReplayCapture(
     console.log(`\n  Target date : ${targetDate}`);
     console.log(`  Output dir  : ${runState.outputDir}`);
     console.log(`  Max bars    : ${config.run.maxBars}`);
+    console.log(
+      `  Stop mode   : ${config.run.stopMode === "manual"
+        ? "manual (press Enter again to stop after the current bar)"
+        : "date (OCR after each bar)"}`
+    );
     if (dryRun) {
       console.log("  Mode        : DRY RUN");
       console.log("  Debug imgs  : debug-strip.png, debug-badge.png saved to output dir\n");
@@ -183,6 +215,7 @@ export async function runReplayCapture(
         targetDate,
         symbol: config.tradingView.expectedSymbol,
         layoutMode: config.tradingView.layoutMode,
+        stopMode: config.run.stopMode,
         barsCaptured: 0,
         startTime: runState.startTime.toISOString(),
         endTime: new Date().toISOString(),
@@ -196,6 +229,11 @@ export async function runReplayCapture(
 
     // ── MAIN LOOP ─────────────────────────────────────────────────────────────
     while (runState.barIndex < config.run.maxBars) {
+      if (manualStopController.isStopRequested()) {
+        logStep({ barIndex: runState.barIndex }, "Manual stop requested — stopping");
+        break;
+      }
+
       const barStart = Date.now();
 
       // Full-page baseline hash for visual-change detection
@@ -224,34 +262,39 @@ export async function runReplayCapture(
         barIndex: runState.barIndex,
       });
 
-      // READING_CURRENT_DATE via OCR
-      transition(State.READING_CURRENT_DATE);
-      const reading = await readCurrentDateWithRetries(page, canvas, {
-        barIndex: runState.barIndex,
-        phase: "barDate",
-      });
-      const currentDate = reading?.date ?? null;
+      let reading: Awaited<ReturnType<typeof readCurrentDateWithRetries>> | null = null;
+      let currentDate: string | null = null;
 
-      logStep(
-        { barIndex: runState.barIndex, targetDate, currentDate },
-        "Date read after bar advance"
-      );
+      if (config.run.stopMode === "date") {
+        // READING_CURRENT_DATE via OCR
+        transition(State.READING_CURRENT_DATE);
+        reading = await readCurrentDateWithRetries(page, canvas, {
+          barIndex: runState.barIndex,
+          phase: "barDate",
+        });
+        currentDate = reading?.date ?? null;
 
-      // CHECKING_STOP_CONDITION
-      transition(State.CHECKING_STOP_CONDITION);
-
-      if (!currentDate) {
-        logWarn({ barIndex: runState.barIndex }, "OCR returned no date — stopping for safety");
-        runState.errors.push(`bar ${runState.barIndex}: date unreadable — stopped`);
-        break;
-      }
-
-      if (currentDate > targetDate) {
         logStep(
-          { barIndex: runState.barIndex, currentDate, targetDate },
-          "Date advanced past target — stopping"
+          { barIndex: runState.barIndex, targetDate, currentDate },
+          "Date read after bar advance"
         );
-        break;
+
+        // CHECKING_STOP_CONDITION
+        transition(State.CHECKING_STOP_CONDITION);
+
+        if (!currentDate) {
+          logWarn({ barIndex: runState.barIndex }, "OCR returned no date — stopping for safety");
+          runState.errors.push(`bar ${runState.barIndex}: date unreadable — stopped`);
+          break;
+        }
+
+        if (currentDate > targetDate) {
+          logStep(
+            { barIndex: runState.barIndex, currentDate, targetDate },
+            "Date advanced past target — stopping"
+          );
+          break;
+        }
       }
 
       // CAPTURING_SCREENSHOT
@@ -275,15 +318,24 @@ export async function runReplayCapture(
       const elapsed = Date.now() - barStart;
       runState.bars.push({
         barIndex: runState.barIndex,
-        date: currentDate,
+        date: currentDate ?? targetDate,
         time: reading?.time ?? null,
         filePath,
         elapsedMs: elapsed,
       });
 
+      const barLabel = currentDate
+        ? `${currentDate}${reading?.time ? " " + reading.time : ""}`
+        : "manual-stop";
       console.log(
-        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${currentDate}${reading?.time ? " " + reading.time : ""}  ${path.basename(filePath)}  (${elapsed}ms)`
+        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${barLabel}  ${path.basename(filePath)}  (${elapsed}ms)`
       );
+
+      if (config.run.stopMode === "manual" && manualStopController.isStopRequested()) {
+        transition(State.CHECKING_STOP_CONDITION);
+        logStep({ barIndex: runState.barIndex }, "Manual stop requested — stopping");
+        break;
+      }
     }
 
     if (runState.barIndex >= config.run.maxBars) {
@@ -298,6 +350,7 @@ export async function runReplayCapture(
       targetDate,
       symbol: config.tradingView.expectedSymbol,
       layoutMode: config.tradingView.layoutMode,
+      stopMode: config.run.stopMode,
       barsCaptured: runState.barIndex,
       startTime: runState.startTime.toISOString(),
       endTime: new Date().toISOString(),
@@ -323,6 +376,7 @@ export async function runReplayCapture(
       targetDate: runState.targetDate,
       symbol: config.tradingView.expectedSymbol,
       layoutMode: config.tradingView.layoutMode,
+      stopMode: config.run.stopMode,
       barsCaptured: runState.barIndex,
       startTime: runState.startTime.toISOString(),
       endTime: new Date().toISOString(),
@@ -337,6 +391,7 @@ export async function runReplayCapture(
 
     throw err;
   } finally {
+    manualStopController.close();
     await terminateOcrWorker();
   }
 }

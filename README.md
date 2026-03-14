@@ -1,6 +1,6 @@
 # replaycap
 
-Automates TradingView Bar Replay — steps through bars one at a time, waits for the chart to fully render, and saves a full-page screenshot after each bar. Stops automatically when the replay date advances past the target day.
+Automates TradingView Bar Replay — steps through bars one at a time, waits for the chart to fully render, and saves a full-page screenshot after each bar. By default it reads the date once at startup, then keeps capturing until you press Enter again to stop.
 
 Personal use only.
 
@@ -13,9 +13,8 @@ Personal use only.
 3. The script reads the current date from the chart via OCR, then loops:
    - Clicks **Next Bar**
    - Waits for the canvas to visually stabilize
-   - OCRs the date badge to check stop condition
    - Saves a full-page screenshot with a deterministic filename
-4. When the date advances past the target day, the script stops and writes a `run-summary.json`.
+4. By default, you press Enter again to stop after the current bar. If you use `--stop-mode date`, the script OCRs the date badge after each bar and stops when the date advances past the target day.
 
 ---
 
@@ -50,6 +49,9 @@ npm start -- --no-wait
 # Override target date instead of reading via OCR
 npm start -- --target-date 2026-03-13
 
+# Preserve the old auto-stop behavior
+npm start -- --stop-mode date
+
 # Custom browser profile and output directory
 npm start -- --user-data-dir ./my-profile --output-root ./screenshots
 ```
@@ -63,11 +65,13 @@ On first run a `.browser-profile/` directory is created to persist the TradingVi
 ```
 output/
   2026-03-13-tv-bt/
-    VN301!__dual__2026-03-13__bar_0001__2026-03-13_09-31-00.png
-    VN301!__dual__2026-03-13__bar_0002__2026-03-13_09-32-00.png
+    VN301!__dual__2026-03-13__bar_0001.png
+    VN301!__dual__2026-03-13__bar_0002.png
     ...
     run-summary.json
 ```
+
+Use `--stop-mode date` if you want the old behavior: OCR after each bar, automatic stop when the date changes, and filenames that include the detected bar date/time.
 
 ---
 

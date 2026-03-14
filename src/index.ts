@@ -25,6 +25,11 @@ program
     "--no-wait",
     "Skip the user-ready prompt and start immediately"
   )
+  .option(
+    "--stop-mode <manual|date>",
+    "How to stop capture: manual or date-based OCR",
+    "manual"
+  )
   .parse(process.argv);
 
 const opts = program.opts<{
@@ -33,6 +38,7 @@ const opts = program.opts<{
   userDataDir: string;
   outputRoot: string;
   wait: boolean;
+  stopMode: "manual" | "date";
 }>();
 
 const config = loadConfig({
@@ -43,6 +49,7 @@ const config = loadConfig({
     outputRoot: opts.outputRoot,
     targetDate: opts.targetDate,
     waitForUserReady: opts.wait,
+    stopMode: opts.stopMode,
   },
 });
 

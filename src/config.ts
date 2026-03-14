@@ -22,6 +22,7 @@ const configSchema = z.object({
     targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     maxBars: z.number().int().positive().default(500),
     waitForUserReady: z.boolean().default(true),
+    stopMode: z.enum(["manual", "date"]).default("manual"),
   }).default({}),
   settle: z.object({
     pollMs: z.number().int().positive().default(200),

@@ -10,6 +10,7 @@ describe("loadConfig", () => {
     expect(cfg.tradingView.expectedSymbol).toBe("VN301!");
     expect(cfg.tradingView.layoutMode).toBe("dual");
     expect(cfg.run.maxBars).toBe(500);
+    expect(cfg.run.stopMode).toBe("manual");
     expect(cfg.settle.pollMs).toBe(200);
     expect(cfg.settle.stableFrames).toBe(3);
   });
@@ -31,6 +32,11 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ settle: { pollMs: 150, stableFrames: 2 } });
     expect(cfg.settle.pollMs).toBe(150);
     expect(cfg.settle.stableFrames).toBe(2);
+  });
+
+  it("accepts stopMode override", () => {
+    const cfg = loadConfig({ run: { stopMode: "date" } });
+    expect(cfg.run.stopMode).toBe("date");
   });
 
   it("accepts userDataDir override", () => {
