@@ -6,7 +6,7 @@ import { State } from "../types.js";
 import { findChartCanvas } from "../tradingview/findChartCanvas.js";
 import { findNextBarButton, isReplayActive } from "../tradingview/findReplayControls.js";
 import { stepNextBar } from "../tradingview/stepNextBar.js";
-import { captureDateRegion } from "../tradingview/readCurrentDate.js";
+import { readCurrentDate, terminateOcrWorker } from "../tradingview/readCurrentDate.js";
 import { hashImage } from "../capture/hashImage.js";
 import { waitForVisualChange } from "../capture/waitForVisualChange.js";
 import { waitForStableFrame } from "../capture/waitForStableFrame.js";
@@ -16,10 +16,7 @@ import { formatFileName } from "../utils/formatFileName.js";
 import { logStep, logError, logWarn } from "../utils/logger.js";
 
 async function promptLine(message: string): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise<string>((resolve) => {
     rl.question(message, (answer) => {
       rl.close();
@@ -32,17 +29,6 @@ async function promptEnter(message: string): Promise<void> {
   await promptLine(message);
 }
 
-/**
- * Main state machine that drives the entire replay capture loop.
- *
- * Date detection strategy:
- *   The TradingView date badge is canvas-rendered and cannot be read from the DOM.
- *   Instead we:
- *     1. Ask the user for the target date at startup (or accept --target-date CLI flag).
- *     2. Capture a screenshot crop of the bottom-right canvas corner (the date badge region).
- *     3. Hash that region before and after each bar advance.
- *     4. When the hash changes, the date has rolled over — stop.
- */
 export async function runReplayCapture(
   page: Page,
   config: AppConfig,
@@ -71,7 +57,7 @@ export async function runReplayCapture(
 
     console.log("\n=== TradingView Bar Replay Capture ===");
     console.log("\n  The browser is open. Please:");
-    console.log("    1. Open TradingView and load the VN301! dual layout (1m left, 5m right)");
+    console.log("    1. Load the VN301! dual layout (1m left, 5m right)");
     console.log("    2. Enable Bar Replay and position the replay start point");
     console.log("    3. Make sure the chart is fully loaded and the replay toolbar is visible");
 
@@ -79,11 +65,9 @@ export async function runReplayCapture(
       await promptEnter("\n→ When ready, press Enter to continue...\n");
     }
 
-    // Verify chart canvas
     const canvas: ElementHandle<Element> = await findChartCanvas(page);
     console.log("✓ Chart canvas detected");
 
-    // Verify replay toolbar
     const replayActive = await isReplayActive(page);
     if (!replayActive) {
       logWarn({}, "Replay toolbar not detected");
@@ -92,40 +76,59 @@ export async function runReplayCapture(
       console.log("✓ Replay toolbar detected");
     }
 
-    // Verify next bar button
     await findNextBarButton(page);
     console.log("✓ Next Bar button found");
 
     // ── READING_TARGET_DATE ───────────────────────────────────────────────────
     transition(State.READING_TARGET_DATE);
 
-    // Target date: use CLI flag if provided, otherwise ask the user.
     let targetDate = config.run.targetDate ?? "";
+
     if (!targetDate) {
-      targetDate = await promptLine(
-        "\n  Enter the target date to capture (YYYY-MM-DD): "
-      );
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
-        throw new Error(`Invalid date format: "${targetDate}". Expected YYYY-MM-DD.`);
+      // Try OCR first
+      console.log("\n  Reading date from chart via OCR...");
+      const reading = await readCurrentDate(page, canvas);
+      if (reading) {
+        targetDate = reading.date;
+        console.log(`  OCR detected date: ${targetDate}`);
+        const confirm = await promptLine(
+          `  Use "${targetDate}" as target date? [Enter to confirm, or type a different date]: `
+        );
+        if (confirm && /^\d{4}-\d{2}-\d{2}$/.test(confirm)) {
+          targetDate = confirm;
+        } else if (confirm && confirm !== "") {
+          throw new Error(`Invalid date format: "${confirm}". Expected YYYY-MM-DD.`);
+        }
+      } else {
+        // OCR failed — ask user
+        console.warn("  OCR could not read date from chart.");
+        targetDate = await promptLine(
+          "  Enter the target date manually (YYYY-MM-DD): "
+        );
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+          throw new Error(`Invalid date format: "${targetDate}". Expected YYYY-MM-DD.`);
+        }
       }
     }
 
     runState.targetDate = targetDate;
     runState.outputDir = path.join(config.run.outputRoot, `${targetDate}-tv-bt`);
 
-    // Capture baseline date-region hash — used to detect when the date rolls over.
-    const baselineDateRegion = await captureDateRegion(page, canvas);
-    const baselineDateHash = hashImage(baselineDateRegion);
+    const debugDir = dryRun ? runState.outputDir : undefined;
 
-    console.log(`\n  Target date        : ${targetDate}`);
-    console.log(`  Output dir         : ${runState.outputDir}`);
-    console.log(`  Max bars           : ${config.run.maxBars}`);
-    console.log(`  Date region hash   : ${baselineDateHash.slice(0, 12)}…`);
-    if (dryRun) console.log("  Mode               : DRY RUN (1 bar only)\n");
-    else console.log();
+    console.log(`\n  Target date : ${targetDate}`);
+    console.log(`  Output dir  : ${runState.outputDir}`);
+    console.log(`  Max bars    : ${config.run.maxBars}`);
+    if (dryRun) {
+      console.log("  Mode        : DRY RUN");
+      console.log("  Debug imgs  : debug-strip.png, debug-badge.png saved to output dir\n");
+    } else {
+      console.log();
+    }
 
     // ── DRY RUN ───────────────────────────────────────────────────────────────
     if (dryRun) {
+      // Save full screenshot
       const fileName = formatFileName({
         symbol: config.tradingView.expectedSymbol,
         layoutMode: config.tradingView.layoutMode,
@@ -134,7 +137,16 @@ export async function runReplayCapture(
       });
       const filePath = path.join(runState.outputDir, fileName);
       await saveScreenshot(page, filePath);
-      console.log(`  Dry-run screenshot saved: ${filePath}`);
+      console.log(`  Full screenshot : ${filePath}`);
+
+      // Also run OCR with debug images saved
+      console.log("  Running OCR on date badge...");
+      const reading = await readCurrentDate(page, canvas, debugDir);
+      if (reading) {
+        console.log(`  OCR result  : date=${reading.date}  time=${reading.time ?? "(none)"}`);
+      } else {
+        console.warn("  OCR result  : no date found — check debug-strip.png and debug-badge.png");
+      }
 
       const summary: RunSummary = {
         targetDate,
@@ -155,7 +167,7 @@ export async function runReplayCapture(
     while (runState.barIndex < config.run.maxBars) {
       const barStart = Date.now();
 
-      // Snapshot full-page baseline for visual-change detection
+      // Full-page baseline hash for visual-change detection
       const baselineBuf = await page.screenshot({ fullPage: false });
       const baselineHash = hashImage(baselineBuf);
 
@@ -181,29 +193,29 @@ export async function runReplayCapture(
         barIndex: runState.barIndex,
       });
 
-      // READING_CURRENT_DATE — compare date-region hash to baseline
+      // READING_CURRENT_DATE via OCR
       transition(State.READING_CURRENT_DATE);
-      const currentDateRegion = await captureDateRegion(page, canvas);
-      const currentDateHash = hashImage(currentDateRegion);
-      const dateChanged = currentDateHash !== baselineDateHash;
+      const reading = await readCurrentDate(page, canvas);
+      const currentDate = reading?.date ?? null;
 
       logStep(
-        {
-          barIndex: runState.barIndex,
-          targetDate,
-          dateChanged,
-          dateHash: currentDateHash.slice(0, 12),
-        },
-        "Date region check"
+        { barIndex: runState.barIndex, targetDate, currentDate },
+        "Date read after bar advance"
       );
 
       // CHECKING_STOP_CONDITION
       transition(State.CHECKING_STOP_CONDITION);
 
-      if (dateChanged) {
+      if (!currentDate) {
+        logWarn({ barIndex: runState.barIndex }, "OCR returned no date — stopping for safety");
+        runState.errors.push(`bar ${runState.barIndex}: date unreadable — stopped`);
+        break;
+      }
+
+      if (currentDate > targetDate) {
         logStep(
-          { barIndex: runState.barIndex, targetDate },
-          "Date region changed — replay crossed into next day, stopping"
+          { barIndex: runState.barIndex, currentDate, targetDate },
+          "Date advanced past target — stopping"
         );
         break;
       }
@@ -217,6 +229,8 @@ export async function runReplayCapture(
         layoutMode: config.tradingView.layoutMode,
         targetDate,
         barIndex: runState.barIndex,
+        barDate: reading?.date,
+        barTime: reading?.time,
       });
       const filePath = path.join(runState.outputDir, fileName);
 
@@ -227,14 +241,14 @@ export async function runReplayCapture(
       const elapsed = Date.now() - barStart;
       runState.bars.push({
         barIndex: runState.barIndex,
-        date: targetDate,
-        time: null,
+        date: currentDate,
+        time: reading?.time ?? null,
         filePath,
         elapsedMs: elapsed,
       });
 
       console.log(
-        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${targetDate}  ${path.basename(filePath)}  (${elapsed}ms)`
+        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${currentDate}${reading?.time ? " " + reading.time : ""}  ${path.basename(filePath)}  (${elapsed}ms)`
       );
     }
 
@@ -268,7 +282,7 @@ export async function runReplayCapture(
   } catch (err) {
     transition(State.ERROR);
     const message = err instanceof Error ? err.message : String(err);
-    logError({ state: currentState, error: message }, "Fatal error in replay capture");
+    logError({ state: currentState, error: message }, "Fatal error");
     runState.errors.push(message);
 
     const summary: RunSummary = {
@@ -284,13 +298,11 @@ export async function runReplayCapture(
     };
 
     if (runState.outputDir) {
-      try {
-        await writeRunSummary(summary);
-      } catch {
-        // best-effort
-      }
+      try { await writeRunSummary(summary); } catch { /* best-effort */ }
     }
 
     throw err;
+  } finally {
+    await terminateOcrWorker();
   }
 }

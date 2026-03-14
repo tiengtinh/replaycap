@@ -1,4 +1,6 @@
 node_modules/
+tmp/
+!tmp/.gitkeep
 dist/
 output/
 .pnpm-debug.log
