@@ -21,15 +21,16 @@ export const SELECTORS = {
 
   /**
    * Bar Replay "Next bar" button.
-   * TradingView uses a data-name attribute on the replay toolbar buttons.
-   * Fallback selectors are listed in order of reliability.
+   *
+   * The button has no data-name or aria-label — identified by:
+   *   1. data-role="button" + unique SVG path starting with "M20 6v16" (the step-forward icon)
+   *   2. data-role="button" + SVG viewBox "0 0 28 28" containing vertical bar + arrow shape
+   *
+   * CSS-only fallback: match the step-forward SVG path via :has()
    */
   nextBarButton: [
-    '[data-name="replay-step-forward"]',
-    'button[aria-label*="Next bar"]',
-    'button[aria-label*="next bar"]',
-    'button[title*="Next bar"]',
-    'button[title*="next bar"]',
+    '[data-role="button"]:has(path[d^="M20 6v16"])',
+    '[data-role="button"]:has(svg[viewBox="0 0 28 28"] path[fill-rule="evenodd"])',
   ],
 
   /**

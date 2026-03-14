@@ -1,11 +1,5 @@
-import type { Page } from "playwright";
-import { SELECTORS } from "./selectors.js";
+import type { Page, ElementHandle } from "playwright";
 import { logger } from "../utils/logger.js";
-
-// Matches YYYY-MM-DD
-const DATE_PATTERN = /\d{4}-\d{2}-\d{2}/;
-// Matches HH:MM or HH:MM:SS
-const TIME_PATTERN = /\d{2}:\d{2}(?::\d{2})?/;
 
 export type DateTimeReading = {
   date: string;
@@ -13,73 +7,32 @@ export type DateTimeReading = {
 };
 
 /**
- * Reads the current replay date from the TradingView chart UI.
+ * Captures a screenshot of the bottom-right region of a canvas element.
+ * This is where TradingView renders the current replay date badge.
  *
- * Strategy:
- *  1. Try known date badge selectors from the selector map.
- *  2. If none found, scan all visible elements for text matching YYYY-MM-DD.
- *
- * Returns null if no date can be read — the caller must handle this as a stop condition.
+ * Returns the raw PNG buffer — callers hash it to detect date changes.
  */
-export async function readCurrentDate(
-  page: Page
-): Promise<DateTimeReading | null> {
-  // --- Strategy 1: known selectors ---
-  for (const selector of SELECTORS.dateBadge) {
-    try {
-      const el = await page.$(selector);
-      if (!el) continue;
-      const visible = await el.isVisible();
-      if (!visible) continue;
-      const text = (await el.textContent()) ?? "";
-      const dateMatch = DATE_PATTERN.exec(text);
-      if (dateMatch) {
-        const timeMatch = TIME_PATTERN.exec(text);
-        logger.info(
-          { selector, text, date: dateMatch[0] },
-          "Date read from badge selector"
-        );
-        return { date: dateMatch[0], time: timeMatch ? timeMatch[0] : null };
-      }
-    } catch {
-      // Selector failed — try next
-    }
-  }
+export async function captureDateRegion(
+  page: Page,
+  canvas: ElementHandle<Element>
+): Promise<Buffer> {
+  const bbox = await canvas.boundingBox();
+  if (!bbox) throw new Error("Cannot get canvas bounding box for date region");
 
-  // --- Strategy 2: scan page for date text ---
-  try {
-    const dateText = await page.evaluate((pattern: string) => {
-      const re = new RegExp(pattern);
-      // Walk all text nodes
-      const walker = document.createTreeWalker(
-        document.body,
-        NodeFilter.SHOW_TEXT
-      );
-      let node: Node | null;
-      while ((node = walker.nextNode())) {
-        const text = node.textContent ?? "";
-        if (re.test(text)) {
-          return text.trim();
-        }
-      }
-      return null;
-    }, DATE_PATTERN.source);
+  // The date badge occupies the bottom-right corner of the chart canvas.
+  // 220x30 px is wide enough to cover a full YYYY-MM-DD label.
+  const regionWidth = 220;
+  const regionHeight = 36;
 
-    if (dateText) {
-      const dateMatch = DATE_PATTERN.exec(dateText);
-      const timeMatch = TIME_PATTERN.exec(dateText);
-      if (dateMatch) {
-        logger.info(
-          { dateText, date: dateMatch[0] },
-          "Date read via page text scan"
-        );
-        return { date: dateMatch[0], time: timeMatch ? timeMatch[0] : null };
-      }
-    }
-  } catch (err) {
-    logger.warn({ error: String(err) }, "Page text scan for date failed");
-  }
+  const buf = await page.screenshot({
+    clip: {
+      x: bbox.x + bbox.width - regionWidth,
+      y: bbox.y + bbox.height - regionHeight,
+      width: regionWidth,
+      height: regionHeight,
+    },
+  });
 
-  logger.warn("Could not read current date from chart UI");
-  return null;
+  logger.debug({ clip: { regionWidth, regionHeight } }, "Date region captured");
+  return buf as Buffer;
 }

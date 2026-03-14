@@ -13,8 +13,9 @@ export async function launchBrowser(config: AppConfig): Promise<BrowserContext> 
 
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    viewport,
+    viewport: null,   // let the OS window size determine the viewport
     args: [
+      `--window-size=${viewport.width},${viewport.height}`,
       "--disable-blink-features=AutomationControlled",
       "--no-first-run",
       "--no-default-browser-check",

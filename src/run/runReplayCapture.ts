@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page, ElementHandle } from "playwright";
 import path from "path";
 import readline from "readline";
 import type { AppConfig, RunState, RunSummary } from "../types.js";
@@ -6,7 +6,7 @@ import { State } from "../types.js";
 import { findChartCanvas } from "../tradingview/findChartCanvas.js";
 import { findNextBarButton, isReplayActive } from "../tradingview/findReplayControls.js";
 import { stepNextBar } from "../tradingview/stepNextBar.js";
-import { readCurrentDate } from "../tradingview/readCurrentDate.js";
+import { captureDateRegion } from "../tradingview/readCurrentDate.js";
 import { hashImage } from "../capture/hashImage.js";
 import { waitForVisualChange } from "../capture/waitForVisualChange.js";
 import { waitForStableFrame } from "../capture/waitForStableFrame.js";
@@ -15,21 +15,33 @@ import { writeRunSummary } from "./writeRunSummary.js";
 import { formatFileName } from "../utils/formatFileName.js";
 import { logStep, logError, logWarn } from "../utils/logger.js";
 
-async function promptEnter(message: string): Promise<void> {
+async function promptLine(message: string): Promise<string> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
-  await new Promise<void>((resolve) => {
-    rl.question(message, () => {
+  return new Promise<string>((resolve) => {
+    rl.question(message, (answer) => {
       rl.close();
-      resolve();
+      resolve(answer.trim());
     });
   });
 }
 
+async function promptEnter(message: string): Promise<void> {
+  await promptLine(message);
+}
+
 /**
  * Main state machine that drives the entire replay capture loop.
+ *
+ * Date detection strategy:
+ *   The TradingView date badge is canvas-rendered and cannot be read from the DOM.
+ *   Instead we:
+ *     1. Ask the user for the target date at startup (or accept --target-date CLI flag).
+ *     2. Capture a screenshot crop of the bottom-right canvas corner (the date badge region).
+ *     3. Hash that region before and after each bar advance.
+ *     4. When the hash changes, the date has rolled over — stop.
  */
 export async function runReplayCapture(
   page: Page,
@@ -54,7 +66,7 @@ export async function runReplayCapture(
   };
 
   try {
-    // ── IDLE ─────────────────────────────────────────────────────────────────
+    // ── WAITING_FOR_USER_READY ────────────────────────────────────────────────
     transition(State.WAITING_FOR_USER_READY);
 
     console.log("\n=== TradingView Bar Replay Capture ===");
@@ -64,19 +76,17 @@ export async function runReplayCapture(
     console.log("    3. Make sure the chart is fully loaded and the replay toolbar is visible");
 
     if (config.run.waitForUserReady) {
-      await promptEnter(
-        "\n→ When ready, press Enter to begin capture...\n"
-      );
+      await promptEnter("\n→ When ready, press Enter to continue...\n");
     }
 
-    // Verify chart canvas (after user is ready)
-    await findChartCanvas(page);
+    // Verify chart canvas
+    const canvas: ElementHandle<Element> = await findChartCanvas(page);
     console.log("✓ Chart canvas detected");
 
-    // Verify replay is active
+    // Verify replay toolbar
     const replayActive = await isReplayActive(page);
     if (!replayActive) {
-      logWarn({}, "Replay toolbar not detected — ensure Bar Replay is active");
+      logWarn({}, "Replay toolbar not detected");
       console.warn("⚠  Replay toolbar not detected. Make sure Bar Replay mode is on.");
     } else {
       console.log("✓ Replay toolbar detected");
@@ -89,39 +99,38 @@ export async function runReplayCapture(
     // ── READING_TARGET_DATE ───────────────────────────────────────────────────
     transition(State.READING_TARGET_DATE);
 
-    const initialReading = await readCurrentDate(page);
-    if (!initialReading) {
-      throw new Error(
-        "Cannot read target date from chart. Calibrate date badge selector first (see docs/PRD.md)."
+    // Target date: use CLI flag if provided, otherwise ask the user.
+    let targetDate = config.run.targetDate ?? "";
+    if (!targetDate) {
+      targetDate = await promptLine(
+        "\n  Enter the target date to capture (YYYY-MM-DD): "
       );
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+        throw new Error(`Invalid date format: "${targetDate}". Expected YYYY-MM-DD.`);
+      }
     }
 
-    const targetDate =
-      config.run.targetDate && config.run.targetDate !== ""
-        ? config.run.targetDate
-        : initialReading.date;
-
     runState.targetDate = targetDate;
-    runState.outputDir = path.join(
-      config.run.outputRoot,
-      `${targetDate}-tv-bt`
-    );
+    runState.outputDir = path.join(config.run.outputRoot, `${targetDate}-tv-bt`);
 
-    console.log(`\n  Target date : ${targetDate}`);
-    console.log(`  Output dir  : ${runState.outputDir}`);
-    console.log(`  Max bars    : ${config.run.maxBars}`);
-    if (dryRun) console.log("  Mode        : DRY RUN (1 bar only)\n");
+    // Capture baseline date-region hash — used to detect when the date rolls over.
+    const baselineDateRegion = await captureDateRegion(page, canvas);
+    const baselineDateHash = hashImage(baselineDateRegion);
+
+    console.log(`\n  Target date        : ${targetDate}`);
+    console.log(`  Output dir         : ${runState.outputDir}`);
+    console.log(`  Max bars           : ${config.run.maxBars}`);
+    console.log(`  Date region hash   : ${baselineDateHash.slice(0, 12)}…`);
+    if (dryRun) console.log("  Mode               : DRY RUN (1 bar only)\n");
     else console.log();
 
-    // ── DRY RUN: take one screenshot and exit ────────────────────────────────
+    // ── DRY RUN ───────────────────────────────────────────────────────────────
     if (dryRun) {
       const fileName = formatFileName({
         symbol: config.tradingView.expectedSymbol,
         layoutMode: config.tradingView.layoutMode,
         targetDate,
         barIndex: 0,
-        barDate: initialReading.date,
-        barTime: initialReading.time,
       });
       const filePath = path.join(runState.outputDir, fileName);
       await saveScreenshot(page, filePath);
@@ -146,7 +155,7 @@ export async function runReplayCapture(
     while (runState.barIndex < config.run.maxBars) {
       const barStart = Date.now();
 
-      // Take baseline screenshot hash before advancing
+      // Snapshot full-page baseline for visual-change detection
       const baselineBuf = await page.screenshot({ fullPage: false });
       const baselineHash = hashImage(baselineBuf);
 
@@ -172,39 +181,29 @@ export async function runReplayCapture(
         barIndex: runState.barIndex,
       });
 
-      // READING_CURRENT_DATE
+      // READING_CURRENT_DATE — compare date-region hash to baseline
       transition(State.READING_CURRENT_DATE);
-      const reading = await readCurrentDate(page);
-      const currentDate = reading?.date ?? null;
+      const currentDateRegion = await captureDateRegion(page, canvas);
+      const currentDateHash = hashImage(currentDateRegion);
+      const dateChanged = currentDateHash !== baselineDateHash;
 
       logStep(
         {
-          state: currentState,
           barIndex: runState.barIndex,
           targetDate,
-          currentDate,
+          dateChanged,
+          dateHash: currentDateHash.slice(0, 12),
         },
-        "Date read after bar advance"
+        "Date region check"
       );
 
       // CHECKING_STOP_CONDITION
       transition(State.CHECKING_STOP_CONDITION);
 
-      if (!currentDate) {
-        logWarn(
-          { barIndex: runState.barIndex },
-          "Cannot read date — stopping for safety"
-        );
-        runState.errors.push(
-          `bar ${runState.barIndex}: date unreadable — stopped`
-        );
-        break;
-      }
-
-      if (currentDate > targetDate) {
+      if (dateChanged) {
         logStep(
-          { barIndex: runState.barIndex, currentDate, targetDate },
-          "Date advanced past target — stopping"
+          { barIndex: runState.barIndex, targetDate },
+          "Date region changed — replay crossed into next day, stopping"
         );
         break;
       }
@@ -218,8 +217,6 @@ export async function runReplayCapture(
         layoutMode: config.tradingView.layoutMode,
         targetDate,
         barIndex: runState.barIndex,
-        barDate: reading?.date,
-        barTime: reading?.time,
       });
       const filePath = path.join(runState.outputDir, fileName);
 
@@ -230,14 +227,14 @@ export async function runReplayCapture(
       const elapsed = Date.now() - barStart;
       runState.bars.push({
         barIndex: runState.barIndex,
-        date: currentDate,
-        time: reading?.time ?? null,
+        date: targetDate,
+        time: null,
         filePath,
         elapsedMs: elapsed,
       });
 
       console.log(
-        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${currentDate}${reading?.time ? " " + reading.time : ""}  ${path.basename(filePath)}`
+        `  bar ${String(runState.barIndex).padStart(4, "0")}  ${targetDate}  ${path.basename(filePath)}  (${elapsed}ms)`
       );
     }
 
