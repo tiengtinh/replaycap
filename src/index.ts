@@ -8,7 +8,7 @@ import { logger } from "./utils/logger.js";
 const program = new Command();
 
 program
-  .name("tradingview-bt")
+  .name("replaycap")
   .description("TradingView Bar Replay Auto-Capture Script")
   .option("--dry-run", "Connect and take one calibration screenshot, then exit")
   .option(

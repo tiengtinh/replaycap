@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import {
   extractDateFromCanvasBuffer,
+  readDateFromBadgeBuffer,
   detectBlueBadge,
   terminateOcrWorker,
 } from "../../src/tradingview/readCurrentDate.js";
@@ -61,6 +62,15 @@ describe("extractDateFromCanvasBuffer", () => {
 
     const result = await extractDateFromCanvasBuffer(blankBuf);
     expect(result).toBeNull();
+  }, 30_000);
+});
+
+describe("readDateFromBadgeBuffer", () => {
+  it("extracts 2026-03-13 from the badge-raw fixture", async () => {
+    const badgeBuf = readFileSync(path.join(__dirname, "../fixtures/badge-raw-2026-03-13.png"));
+    const result = await readDateFromBadgeBuffer(badgeBuf, DEBUG_DIR);
+    expect(result).not.toBeNull();
+    expect(result!.date).toBe("2026-03-13");
   }, 30_000);
 });
 

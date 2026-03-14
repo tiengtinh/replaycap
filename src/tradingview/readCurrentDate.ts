@@ -179,26 +179,48 @@ export async function extractDateFromCanvasBuffer(
   }
   logger.debug({ bbox: badgeBbox }, "Blue badge detected");
 
-  // ── 3. Crop badge + trim calendar icon ───────────────────────────────────
+  // ── 3. Crop badge ─────────────────────────────────────────────────────────
   const rawBadgeBuf = await sharp(stripBuf).extract(badgeBbox).png().toBuffer();
+
+  // Always save badge-raw to tmp/ for debugging live runs
+  const fsTmp = await import("fs/promises");
+  await fsTmp.mkdir(TMP_DIR, { recursive: true });
+  await fsTmp.writeFile(`${TMP_DIR}/badge-raw-latest.png`, rawBadgeBuf);
 
   if (debugDir) {
     const fs = await import("fs/promises");
     await fs.writeFile(`${debugDir}/debug-badge-raw.png`, rawBadgeBuf);
   }
 
+  return readDateFromBadgeBuffer(rawBadgeBuf, debugDir);
+}
+
+/**
+ * OCR a pre-cropped badge buffer (white text on #2962FF blue).
+ * This is the testable unit — pass tests/fixtures/badge-raw-*.png directly.
+ */
+export async function readDateFromBadgeBuffer(
+  rawBadgeBuf: Buffer,
+  debugDir?: string
+): Promise<DateTimeReading | null> {
   const badgeMeta = await sharp(rawBadgeBuf).metadata();
   const badgeW = badgeMeta.width ?? 0;
   const badgeH = badgeMeta.height ?? 0;
 
-  // ── 4. Preprocess for OCR ─────────────────────────────────────────────────
-  // Badge is white text on #2962FF blue background.
-  // Simplest reliable pipeline: resize 4× only, let Tesseract handle the color image.
-  // (complex greyscale/threshold chains were producing blank output)
+  // ── Preprocess for OCR ────────────────────────────────────────────────────
+  // Keep the source colors intact and only upscale.
+  // The badge is a tiny RGBA crop from Playwright; contrast/invert transforms
+  // were producing unusable OCR input. Tesseract handles the inversion itself
+  // via tessedit_do_invert.
   const processedBuf = await sharp(rawBadgeBuf)
     .resize({ width: badgeW * OCR_SCALE, height: badgeH * OCR_SCALE, kernel: "nearest" })
     .png()
     .toBuffer();
+
+  // Always save processed OCR input to tmp/ for debugging
+  const fsTmpOcr = await import("fs/promises");
+  await fsTmpOcr.mkdir(TMP_DIR, { recursive: true });
+  await fsTmpOcr.writeFile(`${TMP_DIR}/badge-ocr-latest.png`, processedBuf);
 
   if (debugDir) {
     const fs = await import("fs/promises");

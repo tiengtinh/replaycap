@@ -1,7 +1,7 @@
 {
-  "name": "tradingview-bt",
+  "name": "replaycap",
   "version": "1.0.0",
-  "description": "TradingView Bar Replay Auto-Capture Script",
+  "description": "TradingView Bar Replay Auto-Capture",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",

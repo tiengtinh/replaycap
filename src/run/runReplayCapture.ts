@@ -85,30 +85,17 @@ export async function runReplayCapture(
     let targetDate = config.run.targetDate ?? "";
 
     if (!targetDate) {
-      // Try OCR first
       console.log("\n  Reading date from chart via OCR...");
       const reading = await readCurrentDate(page, canvas);
-      if (reading) {
-        targetDate = reading.date;
-        console.log(`  OCR detected date: ${targetDate}`);
-        const confirm = await promptLine(
-          `  Use "${targetDate}" as target date? [Enter to confirm, or type a different date]: `
+      if (!reading) {
+        throw new Error(
+          "OCR could not read the date from the chart.\n" +
+          "  • Check tmp/canvas-latest.png to verify the canvas is captured correctly.\n" +
+          "  • Or pass --target-date YYYY-MM-DD to skip OCR."
         );
-        if (confirm && /^\d{4}-\d{2}-\d{2}$/.test(confirm)) {
-          targetDate = confirm;
-        } else if (confirm && confirm !== "") {
-          throw new Error(`Invalid date format: "${confirm}". Expected YYYY-MM-DD.`);
-        }
-      } else {
-        // OCR failed — ask user
-        console.warn("  OCR could not read date from chart.");
-        targetDate = await promptLine(
-          "  Enter the target date manually (YYYY-MM-DD): "
-        );
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
-          throw new Error(`Invalid date format: "${targetDate}". Expected YYYY-MM-DD.`);
-        }
       }
+      targetDate = reading.date;
+      console.log(`  OCR detected date: ${targetDate}`);
     }
 
     runState.targetDate = targetDate;
