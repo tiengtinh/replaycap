@@ -18,6 +18,7 @@ import { sleep } from "../utils/sleep.js";
 
 const OCR_MAX_RETRIES = 3;
 const OCR_RETRY_DELAY_MS = 750;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 async function promptLine(message: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -31,6 +32,16 @@ async function promptLine(message: string): Promise<string> {
 
 async function promptEnter(message: string): Promise<void> {
   await promptLine(message);
+}
+
+async function promptTargetDate(): Promise<string> {
+  while (true) {
+    const answer = await promptLine("→ Enter target date (YYYY-MM-DD): ");
+    if (DATE_PATTERN.test(answer)) {
+      return answer;
+    }
+    console.warn("  Invalid date format. Expected YYYY-MM-DD.");
+  }
 }
 
 function createManualStopController(enabled: boolean) {
@@ -156,14 +167,21 @@ export async function runReplayCapture(
         phase: "targetDate",
       });
       if (!reading) {
-        throw new Error(
-          "OCR could not read the date from the chart.\n" +
-          "  • Check tmp/canvas-latest.png to verify the canvas is captured correctly.\n" +
-          "  • Or pass --target-date YYYY-MM-DD to skip OCR."
-        );
+        if (config.run.stopMode === "manual") {
+          logWarn({}, "Startup OCR failed in manual mode — prompting for target date");
+          console.warn("  OCR failed at startup.");
+          targetDate = await promptTargetDate();
+        } else {
+          throw new Error(
+            "OCR could not read the date from the chart.\n" +
+            "  • Check tmp/canvas-latest.png to verify the canvas is captured correctly.\n" +
+            "  • Or pass --target-date YYYY-MM-DD to skip OCR."
+          );
+        }
+      } else {
+        targetDate = reading.date;
+        console.log(`  OCR detected date: ${targetDate}`);
       }
-      targetDate = reading.date;
-      console.log(`  OCR detected date: ${targetDate}`);
     }
 
     runState.targetDate = targetDate;

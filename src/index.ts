@@ -7,6 +7,11 @@ import { logger } from "./utils/logger.js";
 
 const program = new Command();
 
+function readNpmConfigString(name: string): string | undefined {
+  const value = process.env[`npm_config_${name}`];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 program
   .name("replaycap")
   .description("TradingView Bar Replay Auto-Capture Script")
@@ -27,8 +32,7 @@ program
   )
   .option(
     "--stop-mode <manual|date>",
-    "How to stop capture: manual or date-based OCR",
-    "manual"
+    "How to stop capture: manual or date-based OCR"
   )
   .parse(process.argv);
 
@@ -38,8 +42,11 @@ const opts = program.opts<{
   userDataDir: string;
   outputRoot: string;
   wait: boolean;
-  stopMode: "manual" | "date";
+  stopMode?: "manual" | "date";
 }>();
+
+const targetDate = opts.targetDate ?? readNpmConfigString("target_date");
+const stopMode = opts.stopMode ?? readNpmConfigString("stop_mode") ?? "manual";
 
 const config = loadConfig({
   browser: {
@@ -47,9 +54,9 @@ const config = loadConfig({
   },
   run: {
     outputRoot: opts.outputRoot,
-    targetDate: opts.targetDate,
+    targetDate,
     waitForUserReady: opts.wait,
-    stopMode: opts.stopMode,
+    stopMode,
   },
 });
 

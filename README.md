@@ -14,7 +14,7 @@ Personal use only.
    - Clicks **Next Bar**
    - Waits for the canvas to visually stabilize
    - Saves a full-page screenshot with a deterministic filename
-4. By default, you press Enter again to stop after the current bar. If you use `--stop-mode date`, the script OCRs the date badge after each bar and stops when the date advances past the target day.
+4. By default, you press Enter again to stop after the current bar. If startup OCR fails in manual mode, the script prompts you to enter `YYYY-MM-DD` so filenames stay stable. If you use `--stop-mode date`, the script OCRs the date badge after each bar and stops when the date advances past the target day.
 
 ---
 
@@ -48,6 +48,9 @@ npm start -- --no-wait
 
 # Override target date instead of reading via OCR
 npm start -- --target-date 2026-03-13
+
+# npm may also expose this as an npm config arg
+npm start --target-date=2026-03-13
 
 # Preserve the old auto-stop behavior
 npm start -- --stop-mode date
