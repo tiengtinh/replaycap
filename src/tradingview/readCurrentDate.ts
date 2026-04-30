@@ -8,12 +8,23 @@ export type DateTimeReading = {
   time: string | null;
 };
 
-// How much of the canvas bottom to scan for the badge (px)
-const SEARCH_STRIP_HEIGHT = 120;
+// Fraction of the canvas height to scan from the bottom for the date badge.
+// The badge sits near the bottom of the main chart pane; using a fraction rather
+// than a fixed pixel count makes detection robust across different browser/window
+// heights. At 0.35 (35%), a 622px canvas gives a 218px strip and a 786px canvas
+// gives a 275px strip — both safely covering the badge at ~y 592-616.
+const SEARCH_STRIP_HEIGHT_FRACTION = 0.35;
+// Minimum strip height (px) — ensures we scan enough even on very small canvases.
+const SEARCH_STRIP_HEIGHT_MIN = 150;
 // How much of the right side to include in the search (px from right edge)
 const SEARCH_STRIP_WIDTH = 600;
 // Minimum blue pixels required to consider a badge found
 const MIN_BLUE_PIXELS = 80;
+// Minimum length of a contiguous blue run in a single row required to anchor
+// the badge search. The date badge is a solid filled rectangle (~82 px wide),
+// so its rows contain long contiguous runs (65-82 px). Oscillator/indicator lines
+// produce only short scattered runs (< 40 px). Set to 40 to discriminate the two.
+const MIN_BADGE_ROW_RUN = 40;
 // Padding added around the detected badge before OCR (px)
 const BADGE_PADDING = 4;
 // Upscale factor for OCR (larger = more accurate for small text)
@@ -64,15 +75,41 @@ type BBox = { left: number; top: number; width: number; height: number };
 const BADGE_VERTICAL_TOLERANCE = 30;
 
 /**
+ * Returns the length of the longest contiguous run of blue pixels in the given row.
+ */
+function maxBlueRunInRow(
+  data: Buffer,
+  y: number,
+  width: number,
+  channels: number,
+  isBlue: (i: number) => boolean
+): number {
+  let maxRun = 0;
+  let run = 0;
+  for (let x = 0; x < width; x++) {
+    if (isBlue((y * width + x) * channels)) {
+      run++;
+      if (run > maxRun) maxRun = run;
+    } else {
+      run = 0;
+    }
+  }
+  return maxRun;
+}
+
+/**
  * Scans raw RGBA pixel data for TradingView brand blue #2962FF (R=41, G=98, B=255)
- * and returns the bounding box of the BOTTOMMOST blue cluster.
+ * and returns the bounding box of the BOTTOMMOST solid blue cluster (the date badge).
  *
  * Two-pass algorithm:
- *   Pass 1 — find the bottommost row (maxY) that contains blue pixels.
- *   Pass 2 — collect only pixels within BADGE_VERTICAL_TOLERANCE rows of maxY.
+ *   Pass 1 — scan bottom-up for the bottommost row whose longest contiguous blue run
+ *             meets MIN_BADGE_ROW_RUN. This anchors on the solid badge rectangle and
+ *             skips sparse indicator/oscillator lines that sit below the badge.
+ *   Pass 2 — collect all blue pixels within BADGE_VERTICAL_TOLERANCE rows of that
+ *             anchor row to build the bounding box.
  *
- * This prevents stray blue chart elements higher in the search strip from
- * inflating the bounding box.
+ * This prevents stray blue chart/indicator elements from inflating or hijacking the
+ * bounding box, even when they appear lower in the search strip than the badge.
  */
 export function detectBlueBadge(
   data: Buffer,
@@ -87,16 +124,16 @@ export function detectBlueBadge(
     return Math.abs(r - 41) < 40 && Math.abs(g - 98) < 50 && b > 180;
   };
 
-  // Pass 1: find bottommost row with blue pixels
+  // Pass 1: find bottommost row with a solid contiguous blue run (badge-like row).
+  // A solid badge rectangle produces runs of 65+ consecutive blue pixels per row.
+  // Scattered indicator/oscillator lines produce runs of < 40 px.
+  // MIN_BADGE_ROW_RUN = 40 cleanly discriminates the two without risking false negatives.
   let bottomRow = -1;
   for (let y = height - 1; y >= 0; y--) {
-    for (let x = 0; x < width; x++) {
-      if (isBlue((y * width + x) * channels)) {
-        bottomRow = y;
-        break;
-      }
+    if (maxBlueRunInRow(data, y, width, channels, isBlue) >= MIN_BADGE_ROW_RUN) {
+      bottomRow = y;
+      break;
     }
-    if (bottomRow !== -1) break;
   }
   if (bottomRow === -1) return null;
 
@@ -105,7 +142,7 @@ export function detectBlueBadge(
   let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
   let count = 0;
 
-  for (let y = topLimit; y < height; y++) {
+  for (let y = topLimit; y <= bottomRow; y++) {
     for (let x = 0; x < width; x++) {
       if (isBlue((y * width + x) * channels)) {
         count++;
@@ -150,10 +187,23 @@ export async function extractDateFromCanvasBuffer(
   const canvasH = canvasMeta.height ?? 0;
 
   // ── 1. Crop search strip (bottom-right corner) ────────────────────────────
+  // Use a fraction of canvas height so the strip covers the badge regardless of
+  // the browser window size. A fixed px value (120) breaks when the canvas is
+  // taller than expected (e.g. 786px) because the badge sits above the strip.
+  const searchStripHeight = Math.max(
+    SEARCH_STRIP_HEIGHT_MIN,
+    Math.round(canvasH * SEARCH_STRIP_HEIGHT_FRACTION)
+  );
+
   const stripX = Math.max(0, canvasW - SEARCH_STRIP_WIDTH);
-  const stripY = Math.max(0, canvasH - SEARCH_STRIP_HEIGHT);
+  const stripY = Math.max(0, canvasH - searchStripHeight);
   const stripW = canvasW - stripX;
   const stripH = canvasH - stripY;
+
+  logger.debug(
+    { canvasW, canvasH, searchStripHeight, stripY },
+    "Search strip dimensions"
+  );
 
   const stripBuf = await sharp(canvasBuf)
     .extract({ left: stripX, top: stripY, width: stripW, height: stripH })
