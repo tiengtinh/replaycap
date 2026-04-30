@@ -1,6 +1,6 @@
 ---
 slug: cant-exit-with-ctrl-c
-status: root_cause_found
+status: resolved
 trigger: "Ctrl + C just restart the browser and not exiting the cli app"
 created: 2026-04-30
 updated: 2026-04-30
