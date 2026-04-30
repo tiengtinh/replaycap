@@ -61,6 +61,26 @@ const config = loadConfig({
 });
 
 let browserContext: Awaited<ReturnType<typeof launchBrowser>> | null = null;
+let shuttingDown = false;
+
+async function shutdown(exitCode: number) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (browserContext) {
+    await browserContext.close().catch(() => {});
+    browserContext = null;
+  }
+  process.exit(exitCode);
+}
+
+process.on("SIGINT", () => {
+  logger.info({}, "SIGINT received — shutting down");
+  void shutdown(130);
+});
+process.on("SIGTERM", () => {
+  logger.info({}, "SIGTERM received — shutting down");
+  void shutdown(143);
+});
 
 async function main() {
   browserContext = await launchBrowser(config);
