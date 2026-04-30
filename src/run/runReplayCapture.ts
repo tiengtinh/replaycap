@@ -111,9 +111,7 @@ export async function runReplayCapture(
 ): Promise<RunSummary> {
   const { dryRun = false } = opts;
   let currentState: State = State.IDLE;
-  const manualStopController = createManualStopController(
-    !dryRun && config.run.stopMode === "manual"
-  );
+  let manualStopController: ReturnType<typeof createManualStopController> | null = null;
 
   const runState: RunState = {
     targetDate: config.run.targetDate ?? "",
@@ -247,6 +245,12 @@ export async function runReplayCapture(
     }
 
     // ── MAIN LOOP ─────────────────────────────────────────────────────────────
+    // Register the manual-stop stdin listener only now — after all interactive
+    // prompts (promptEnter / promptTargetDate) have closed. Otherwise their
+    // readline interfaces share stdin with this one, and a single Enter at the
+    // "ready" prompt is delivered to both, immediately flipping stopRequested.
+    manualStopController = createManualStopController(config.run.stopMode === "manual");
+
     while (runState.barIndex < config.run.maxBars) {
       if (manualStopController.isStopRequested()) {
         logStep({ barIndex: runState.barIndex }, "Manual stop requested — stopping");
@@ -410,7 +414,7 @@ export async function runReplayCapture(
 
     throw err;
   } finally {
-    manualStopController.close();
+    manualStopController?.close();
     await terminateOcrWorker();
   }
 }
